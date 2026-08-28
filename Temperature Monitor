@@ -1,0 +1,57 @@
+#include <WiFi.h>
+#include <WebServer.h>
+
+const char* ssid = "Lohit";
+const char* password = "lokiverse";
+
+WebServer server(80);
+float temperature = 25.0;
+
+void handleRoot() {
+  String page = "<html><head>";
+  page += "<meta http-equiv='refresh' content='2'>";
+  page += "<title>ESP32 Temperature Monitor</title>";
+  
+  page += "</head><body style='text-align:center;font-family:Arial'>";
+  page += "<h1>ESP8266 Temperature Monitor</h1>";
+  page += "<h2>Temperature</h2>";
+  page += "<h1>" + String(temperature) + " &deg;C</h1>";
+  page += "<p>Demonstration only - no sensor connected</p>";
+  page += "<p><centre>Lohit/centre></p>";
+  
+  server.send(200, "text/html", page);
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("\nWiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  
+  // Setup web server
+  server.on("/", handleRoot);
+  server.begin();
+  
+  Serial.println("HTTP server started");
+}
+
+void loop() {
+  server.handleClient();
+  
+  // Simulate temperature change (in real scenario, read from sensor)
+  temperature += 0.1;
+  if (temperature > 30.0) {
+    temperature = 25.0;  // Reset temperature
+  }
+  
+  delay(100);
+}
