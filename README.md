@@ -1,76 +1,94 @@
-# Project 3 – Hosting a Web Server on Raspberry Pi
+# Hosting a Simple Web Server on Raspberry Pi
 
-This project demonstrates how to host a simple web server on a **Raspberry Pi** using Python's built-in HTTP server module, and serve a static HTML page over the local network.
+This repository shows a small, secure-ish workflow to host a static website on a Raspberry Pi using Python. It includes:
+- a minimal Python server script (server.py) that serves files from a directory with useful logging,
+- a sample `index.html`,
+- instructions that avoid unsafe recommendations (no blanket "sudo -s" to run a server).
 
-## Overview
+WARNING: This is for local testing and learning only. Do NOT expose this setup directly to the internet without additional hardening (TLS, authentication, reverse proxy, firewall rules, monitoring).
 
-Using nothing but the Raspberry Pi's terminal and Python 3 (which ships with Raspberry Pi OS), we can turn the Pi into a lightweight web server capable of serving files like `index.html` to any device on the same network.
+## Quick overview
 
-## Steps
+- Use `ip` or `hostname -I` to find your Pi's IP address (instead of the deprecated `ifconfig`).
+- Run the server as a regular user on a non-privileged port (e.g., 8080).
+- If you must use port 80, use a reverse proxy (nginx) or grant a specific binary permission to bind port 80 (see below) — do NOT run general shell sessions as root.
+- Use systemd to run the server in the background and restart it automatically.
 
-### 1. Find the Raspberry Pi's IP Address
+## Files included
+- `server.py` — small Python3 HTTP server with threaded handling and improved logging.
+- `index.html` — example web page served by the server.
 
-```bash
-ifconfig
-```
+## Find your Raspberry Pi IP address
 
-This command lists all network interfaces on the Pi. Look under `eth0` (wired) or `wlan0` (Wi-Fi) for the `inet` address — this is the IP that other devices will use to reach the Pi's web server.
+Preferred commands:
+- Show IPs assigned to all interfaces:
+  - ip addr show
+- Show the IPs on primary interface:
+  - hostname -I
+- Show the IP that will be used to reach the internet (useful when multiple networks):
+  - ip route get 1.1.1.1 | awk '{print $7; exit}'
 
-### 2. Switch to the Root User
+The address you use in a browser from another machine on the same LAN will be `http://<raspberry-pi-ip>:8080/` (if using port 8080).
 
-```bash
-sudo -s
-```
+## Running the server (recommended, simplest)
 
-This elevates the current session to the `root` user, which is required for certain system-level operations (such as binding to port `80`, which is a privileged port). After running this, the prompt changes from `cyperduo@raspberrypi:~$` to `root@raspberrypi:/home/cyperduo#`.
+1. Create a directory to serve, e.g.:
+   - mkdir -p ~/www
+   - cp index.html ~/www/
 
-### 3. Start the Web Server
+2. Run the included server as your normal user:
+   - python3 server.py --port 8080 --directory ~/www
 
-```bash
-python -m http.server 80
-```
+3. Open a browser on any device in the same network at:
+   - http://<raspberry-pi-ip>:8080/
 
-Breaking this down:
-| Component | Purpose |
-|---|---|
-| **Python** | Runs Python's built-in `http.server` module, which turns the current directory into a web-servable folder — no extra installation needed. |
-| **HTTP** | The protocol used to communicate between the Pi (server) and any browser (client) that connects to it. |
-| **Port 80 / 8080** | The "door" through which the connection is made. Port `80` is the default HTTP port (so URLs don't need `:80` appended), while `8080` is a common alternative for non-root use. |
+Press Ctrl+C in the server terminal to stop it.
 
-Once running, the terminal prints a log of every request the server receives, including the IP of the client, the request type (`GET`), the file requested, and the HTTP status code (e.g., `200` for success, `404` for file not found).
+## Why not `sudo -s` + `python -m http.server 80`?
 
-### 4. Create and Edit the Web Page
+- Port 80 is a privileged port; binding it requires root privileges. Running a shell as root or running arbitrary Python as root increases risk.
+- For local testing, use a non-privileged port (8080).
+- For production or permanent hosting, use nginx as a reverse proxy and run a dedicated service with minimal privileges.
 
-```bash
-touch index.html      # creates a new empty file
-ls                     # lists files/folders in the current directory to confirm it was created
-nano index.html        # opens the file in the Nano text editor for editing
-```
+## Running on port 80 (if you truly need it)
 
-Inside `nano`, you can write your HTML content. To save and exit:
+Option A — recommended: use nginx as a reverse proxy that forwards port 80 to the server on 8080.
 
-```
-Ctrl + X   → prompts to save
-Y          → confirm save
-Enter      → confirm filename
-```
+Option B — grant a single binary the right to bind to port 80 (example, careful and only for specific uses):
+- sudo setcap 'cap_net_bind_service=+ep' /usr/bin/python3.10
+  - This grants python the capability to bind privileged ports while not making the whole system root. Understand security implications before using.
 
-Once saved, refreshing the browser at `http://<raspberry-pi-ip>/index.html` (or just `http://<raspberry-pi-ip>/`) will display the page.
+Option C — run via systemd with `User=www-data` and an appropriate socket/proxy setup.
 
-## Command Reference
+## Running the server in the background (systemd example)
 
-| Command | Description |
-|---|---|
-| `ifconfig` | Displays network interface details, including the Pi's IP address |
-| `sudo -s` | Switches to the root user for elevated permissions |
-| `python -m http.server 80` | Starts a simple HTTP server on port 80, serving the current directory |
-| `touch <filename>` | Creates a new empty file |
-| `ls` | Lists files and folders in the current directory |
-| `nano <filename>` | Opens the file in the Nano editor for editing |
-| `Ctrl + X` | Saves and exits the Nano editor |
+Create a dedicated directory and copy files:
+- sudo mkdir -p /opt/simple-http-server
+- sudo cp server.py index.html /opt/simple-http-server/
+- sudo chown -R pi:pi /opt/simple-http-server
 
-## Notes
+Create systemd service file `/etc/systemd/system/simple-http-server.service`:
+- (see example `simple-http-server.service` below — replace `pi` and paths as needed)
 
-- The server only runs while the terminal session is active; closing it stops the server.
-- Serving on port `80` requires root privileges, which is why the user switches to `root` first.
-- This setup is intended for local network testing/learning — it is **not** a production-ready or secured web server.
+Enable and start:
+- sudo systemctl daemon-reload
+- sudo systemctl enable --now simple-http-server.service
+- sudo journalctl -u simple-http-server.service -f
+
+## Logging and debugging
+
+- The script logs requests to stdout/stderr. When running with systemd, logs are available via `journalctl -u simple-http-server.service`.
+- Check network/firewall rules (ufw, iptables) if you can't reach the server.
+
+## Security notes
+
+- This server is minimal and not hardened (no TLS, no authentication, no restriction of served paths).
+- Do not use this to serve sensitive files or to expose to the public Internet.
+- For public hosting, use a production-grade web server (nginx, Apache) or a managed hosting provider and add TLS (Let's Encrypt).
+
+## Command reference
+
+- ip addr show — show network interfaces and addresses
+- hostname -I — print all local IP addresses
+- python3 server.py --port 8080 --directory ~/www — run the provided server
+- sudo systemctl enable --now simple-http-server.service — run the server as a background service
