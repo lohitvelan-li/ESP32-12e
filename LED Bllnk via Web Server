@@ -1,0 +1,166 @@
+/*
+  LED_Control.ino
+  - ESP32 runs as an Access Point (AP) and serves a web UI to control two LEDs.
+  - Provides a JSON API so you can integrate or script the LED control.
+  - Wiring: LED anode -> GPIO (5 or 4) via 220Ω resistor -> cathode -> GND.
+*/
+
+#include <WiFi.h>
+#include <WebServer.h>
+
+// AP credentials (change if you want)
+const char* ssid = "krupa";
+const char* password = "krupa7646"; // min 8 chars for AP mode
+
+// LED pins (change if necessary)
+const int LED1 = 5;
+const int LED2 = 4;
+
+// Web server on port 80
+WebServer server(80);
+
+// LED states mirror physical pins (true = HIGH = ON)
+bool led1State = false;
+bool led2State = false;
+
+String statusJson() {
+  String s = "{";
+  s += "\"led1\":";
+  s += (led1State ? "true" : "false");
+  s += ",\"led2\":";
+  s += (led2State ? "true" : "false");
+  s += "}";
+  return s;
+}
+
+// Serve single-page UI
+void handleRoot() {
+  String page = R"rawliteral(
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ESP32 LED Control</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;text-align:center;padding:18px;background:#f4f4f8}
+    .card{display:inline-block;background:#fff;padding:20px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.08);min-width:260px}
+    h1{margin:0 0 14px;font-size:20px}
+    .row{margin:12px 0}
+    button{padding:8px 12px;margin:0 6px;border-radius:6px;border:1px solid #ccc;background:#eee;cursor:pointer}
+    .on{background:#4caf50;color:#fff;border-color:#4caf50}
+    .off{background:#f44336;color:#fff;border-color:#f44336}
+    small{color:#666}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>ESP32 LED Control</h1>
+    <div><small>Connect to Wi‑Fi SSID: <strong>)rawliteral" + String(ssid) + R"rawliteral(</strong></small></div>
+    <div class="row">
+      <div><strong>LED 1 (GPIO )rawliteral" + String(LED1) + R"rawliteral(</strong></div>
+      <div>
+        <button id="led1On">ON</button>
+        <button id="led1Off">OFF</button>
+        <span id="led1State" style="margin-left:8px"></span>
+      </div>
+    </div>
+    <div class="row">
+      <div><strong>LED 2 (GPIO )rawliteral" + String(LED2) + R"rawliteral(</strong></div>
+      <div>
+        <button id="led2On">ON</button>
+        <button id="led2Off">OFF</button>
+        <span id="led2State" style="margin-left:8px"></span>
+      </div>
+    </div>
+    <div style="margin-top:12px"><a href="/status" target="_blank">/status (JSON)</a></div>
+  </div>
+
+<script>
+function updateUI(data) {
+  document.getElementById('led1State').textContent = data.led1 ? 'ON' : 'OFF';
+  document.getElementById('led2State').textContent = data.led2 ? 'ON' : 'OFF';
+  document.getElementById('led1On').className = data.led1 ? 'on' : '';
+  document.getElementById('led1Off').className = !data.led1 ? 'off' : '';
+  document.getElementById('led2On').className = data.led2 ? 'on' : '';
+  document.getElementById('led2Off').className = !data.led2 ? 'off' : '';
+}
+
+function fetchStatus() {
+  fetch('/status')
+    .then(r => r.json())
+    .then(json => updateUI(json))
+    .catch(err => console.log('status error', err));
+}
+
+function callApi(path) {
+  fetch(path)
+    .then(r => r.json())
+    .then(json => updateUI(json))
+    .catch(err => console.log('api error', err));
+}
+
+document.getElementById('led1On').addEventListener('click', () => callApi('/api/led1/on'));
+document.getElementById('led1Off').addEventListener('click', () => callApi('/api/led1/off'));
+document.getElementById('led2On').addEventListener('click', () => callApi('/api/led2/on'));
+document.getElementById('led2Off').addEventListener('click', () => callApi('/api/led2/off'));
+
+fetchStatus();
+setInterval(fetchStatus, 1000); // refresh UI every second
+</script>
+</body>
+</html>
+)rawliteral";
+  server.send(200, "text/html", page);
+}
+
+// JSON status endpoint
+void handleStatus() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", statusJson());
+}
+
+// API endpoints that toggle LEDs and return JSON status
+void handleLed1On()  { led1State = true;  digitalWrite(LED1, HIGH); server.send(200, "application/json", statusJson()); }
+void handleLed1Off() { led1State = false; digitalWrite(LED1, LOW);  server.send(200, "application/json", statusJson()); }
+void handleLed2On()  { led2State = true;  digitalWrite(LED2, HIGH); server.send(200, "application/json", statusJson()); }
+void handleLed2Off() { led2State = false; digitalWrite(LED2, LOW);  server.send(200, "application/json", statusJson()); }
+
+void handleNotFound() {
+  server.send(404, "text/plain", "404: Not Found");
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(100);
+
+  // initialize pins and ensure LEDs are off
+  pinMode(LED1, OUTPUT);
+  pinMode(LED2, OUTPUT);
+  digitalWrite(LED1, LOW);
+  digitalWrite(LED2, LOW);
+
+  // Start AP
+  WiFi.softAP(ssid, password);
+  IPAddress IP = WiFi.softAPIP();
+  Serial.println();
+  Serial.println("ESP32 Access Point Started");
+  Serial.print("SSID: "); Serial.println(ssid);
+  Serial.print("AP IP address: "); Serial.println(IP);
+
+  // routes
+  server.on("/", handleRoot);
+  server.on("/status", HTTP_GET, handleStatus);
+  server.on("/api/led1/on",  HTTP_GET, handleLed1On);
+  server.on("/api/led1/off", HTTP_GET, handleLed1Off);
+  server.on("/api/led2/on",  HTTP_GET, handleLed2On);
+  server.on("/api/led2/off", HTTP_GET, handleLed2Off);
+  server.onNotFound(handleNotFound);
+
+  server.begin();
+  Serial.println("Web Server started on port 80");
+}
+
+void loop() {
+  server.handleClient();
+}
