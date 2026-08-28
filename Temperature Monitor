@@ -17,8 +17,8 @@
 #include <WebServer.h>
 
 // --- CONFIG ---
-const char* ssid = "Lohit";          // <<< replace with your SSID
-const char* password = "lokiverse";  // <<< replace with your Wi‑Fi password
+const char* ssid = "krupa";          // <<< replace with your SSID
+const char* password = "krupa7646";  // <<< replace with your Wi‑Fi password
 
 #define USE_DHT      // comment out this line to use simulated temperature
 #ifdef USE_DHT
