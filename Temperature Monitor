@@ -1,57 +1,149 @@
+/*
+  TemperatureMonitor.ino
+  - Serves a simple web page showing temperature.
+  - By default it simulates temperature. To use a real DHT sensor, uncomment USE_DHT
+    and install the "DHT sensor library" by Adafruit.
+
+  Instructions:
+  1. Replace ssid and password with your Wi‑Fi credentials.
+  2. (Optional) To use a DHT sensor:
+     - Install "DHT sensor library" and "Adafruit Unified Sensor" in Library Manager.
+     - Uncomment #define USE_DHT, set DHTPIN and DHTTYPE.
+     - Wire sensor data pin to DHTPIN, VCC to 3.3V (or 5V if sensor needs), GND to GND.
+  3. Select "ESP32 Dev Module" in Tools > Board and upload.
+*/
+
 #include <WiFi.h>
 #include <WebServer.h>
 
-const char* ssid = "Lohit";
-const char* password = "lokiverse";
+// --- CONFIG ---
+const char* ssid = "Lohit";          // <<< replace with your SSID
+const char* password = "lokiverse";  // <<< replace with your Wi‑Fi password
 
+#define USE_DHT      // comment out this line to use simulated temperature
+#ifdef USE_DHT
+  #include <DHT.h>
+  #define DHTPIN 4         // GPIO pin where the DHT sensor is connected (change if needed)
+  #define DHTTYPE DHT22    // DHT11 or DHT22
+  DHT dht(DHTPIN, DHTTYPE);
+#endif
+
+// WiFi / Server
 WebServer server(80);
-float temperature = 25.0;
 
-void handleRoot() {
-  String page = "<html><head>";
-  page += "<meta http-equiv='refresh' content='2'>";
+// Temperature state
+float temperature = 25.0;
+unsigned long lastSensorRead = 0;
+const unsigned long sensorInterval = 2000; // read every 2s
+
+// Helper to get human readable IP (or "AP" if not connected)
+String ipString() {
+  if (WiFi.status() == WL_CONNECTED) return WiFi.localIP().toString();
+  return "192.168.4.1 (AP Mode)";
+}
+
+void sendRootPage() {
+  String page = "<!doctype html><html><head><meta charset='utf-8'>";
+  page += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+  page += "<meta http-equiv='refresh' content='5'>"; // refresh every 5s
   page += "<title>ESP32 Temperature Monitor</title>";
-  
-  page += "</head><body style='text-align:center;font-family:Arial'>";
-  page += "<h1>ESP8266 Temperature Monitor</h1>";
-  page += "<h2>Temperature</h2>";
-  page += "<h1>" + String(temperature) + " &deg;C</h1>";
-  page += "<p>Demonstration only - no sensor connected</p>";
-  page += "<p><centre>Lohit/centre></p>";
-  
+  page += "<style>";
+  page += "body{font-family:Arial,Helvetica,sans-serif;text-align:center;padding:20px;background:#f7f7f7}";
+  page += ".card{display:inline-block;background:#fff;padding:18px 28px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08)}";
+  page += "h1{margin:6px 0} p{margin:6px 0;color:#555}";
+  page += "</style></head><body>";
+  page += "<div class='card'>";
+  page += "<h2>ESP32 Temperature Monitor</h2>";
+  page += "<p><strong>IP:</strong> " + ipString() + "</p>";
+  page += "<h1>" + String(temperature, 1) + " &deg;C</h1>";
+  page += "<p>Updated: " + String(millis() / 1000) + "s since boot</p>";
+#ifdef USE_DHT
+  page += "<p>Sensor: DHT</p>";
+#else
+  page += "<p>Sensor: simulated (no sensor connected)</p>";
+#endif
+  page += "<p><a href='/json'>View JSON</a></p>";
+  page += "</div>";
+  page += "</body></html>";
+
   server.send(200, "text/html", page);
+}
+
+void sendJson() {
+  String json = "{";
+  json += "\"temperature\":" + String(temperature, 2) + ",";
+  json += "\"ip\":\"" + ipString() + "\"";
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleNotFound(){
+  server.send(404, "text/plain", "Not found");
 }
 
 void setup() {
   Serial.begin(115200);
-  
-  // Connect to WiFi
+  delay(100);
+
+#ifdef USE_DHT
+  dht.begin();
+  Serial.println("DHT sensor initialized");
+#endif
+
+  Serial.printf("Connecting to WiFi SSID: %s\n", ssid);
   WiFi.begin(ssid, password);
-  
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+
+  unsigned long start = millis();
+  const unsigned long wifiTimeout = 15000; // 15s timeout
+
+  while (WiFi.status() != WL_CONNECTED && millis() - start < wifiTimeout) {
     Serial.print(".");
+    delay(500);
   }
-  
-  Serial.println("\nWiFi connected");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-  
-  // Setup web server
-  server.on("/", handleRoot);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi connected");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    // Fallback: start soft AP for configuration/debugging
+    Serial.println("\nFailed to connect to WiFi, starting Access Point for troubleshooting");
+    WiFi.softAP("ESP32_TempMon");
+    Serial.print("AP IP address: ");
+    Serial.println(WiFi.softAPIP());
+  }
+
+  // HTTP routes
+  server.on("/", sendRootPage);
+  server.on("/json", sendJson);
+  server.onNotFound(handleNotFound);
   server.begin();
-  
-  Serial.println("HTTP server started");
+  Serial.println("HTTP server started on port 80");
 }
 
 void loop() {
   server.handleClient();
-  
-  // Simulate temperature change (in real scenario, read from sensor)
-  temperature += 0.1;
-  if (temperature > 30.0) {
-    temperature = 25.0;  // Reset temperature
+
+  unsigned long now = millis();
+  if (now - lastSensorRead >= sensorInterval) {
+    lastSensorRead = now;
+
+#ifdef USE_DHT
+    float t = dht.readTemperature();
+    if (isnan(t)) {
+      Serial.println("Failed to read from DHT sensor, keeping previous value");
+    } else {
+      temperature = t;
+      Serial.printf("DHT temperature: %.2f C\n", temperature);
+    }
+#else
+    // Simulate temperature drifting slowly for demo
+    temperature += 0.05;
+    if (temperature > 30.0) temperature = 25.0;
+    Serial.printf("Simulated temperature: %.2f C\n", temperature);
+#endif
   }
-  
-  delay(100);
+
+  // small delay to keep loop cooperative
+  delay(10);
 }
