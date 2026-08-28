@@ -1,124 +1,18 @@
-# MQTT Chat Between NodeMCU (ESP8266) and Raspberry Pi
-
-This guide sets up a simple two-way "chat" using MQTT: the Raspberry Pi runs the MQTT broker (Mosquitto), and both the Pi and the NodeMCU act as clients that publish and subscribe to topics.
-
-## Architecture
-
-```
-[NodeMCU] <-- WiFi --> [Mosquitto Broker on Raspberry Pi] <--> [Python client on Pi]
-
-publish:   chat/nodemcu        publish:   chat/pi
-subscribe: chat/pi             subscribe: chat/nodemcu
-```
-
-- The **NodeMCU** publishes messages to `chat/nodemcu` and listens for messages on `chat/pi`.
-- The **Python client on the Pi** publishes messages to `chat/pi` and listens for messages on `chat/nodemcu`.
-- The **Mosquitto broker** (also running on the Pi) routes messages between the two — neither client talks directly to the other.
-
----
-
-## Part 1 — Raspberry Pi: Install the MQTT Broker
-
-### 1. Update the system
-
-```bash
-sudo apt update && sudo apt upgrade -y
-```
-
-### 2. Install Mosquitto broker and command-line clients
-
-```bash
-sudo apt install -y mosquitto mosquitto-clients
-```
-
-### 3. Enable Mosquitto to start on boot
-
-```bash
-sudo systemctl enable mosquitto
-sudo systemctl start mosquitto
-sudo systemctl status mosquitto
-```
-
-### 4. Allow network connections (recommended)
-
-By default, newer Mosquitto versions only listen on `localhost`. Create a config file:
-
-```bash
-sudo nano /etc/mosquitto/conf.d/default.conf
-```
-
-Paste the following:
-
-```
-listener 1883
-allow_anonymous true
-```
-
-For real use, set `allow_anonymous` to `false` and create a username/password instead:
-
-```bash
-sudo mosquitto_passwd -c /etc/mosquitto/passwd pi_user
-```
-
-Then add `password_file /etc/mosquitto/passwd` to the config file above. Restart the service:
-
-```bash
-sudo systemctl restart mosquitto
-```
-
-### 5. Find the Pi's IP address (NodeMCU will need this)
-
-```bash
-hostname -I
-```
-
-### 6. Test the broker locally
-
-Open two terminals on the Pi:
-
-```bash
-# Terminal A - subscribe
-mosquitto_sub -h localhost -t "chat/test"
-```
-
-```bash
-# Terminal B - publish
-mosquitto_pub -h localhost -t "chat/test" -m "Hello broker"
-```
-
-You should see `"Hello broker"` appear in Terminal A. This confirms the broker is working before adding networked devices.
-
----
-
-## Part 2 — NodeMCU (ESP8266): Arduino Sketch
-
-### 1. Install required libraries
-
-In the Arduino IDE, install these via **Library Manager**:
-- `PubSubClient` by Nick O'Leary
-- `ESP8266WiFi` (bundled with the ESP8266 board package)
-
-Make sure the **ESP8266 board package** is installed via **Boards Manager** as well.
-
-### 2. Upload the sketch
-
-```cpp
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
-// WiFi credentials
+// ---------- CONFIGURATION ----------
 const char* ssid = "YOUR_WIFI_SSID";
 const char* password = "YOUR_WIFI_PASSWORD";
 
-// MQTT broker (Raspberry Pi) details
-const char* mqtt_server = "PI_IP_ADDRESS";   // e.g. 192.168.1.50
+const char* mqtt_server = "PI_IP_ADDRESS"; // e.g. "192.168.1.50"
 const int mqtt_port = 1883;
-// If you enabled authentication in Part 1, set these:
-const char* mqtt_user = "";       // leave blank if using allow_anonymous true
+const char* mqtt_user = ""; // set if you enable mosquitto auth
 const char* mqtt_pass = "";
 
 const char* topic_publish   = "chat/nodemcu";
 const char* topic_subscribe = "chat/pi";
+// -----------------------------------
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -130,6 +24,7 @@ void setup_wifi() {
   Serial.println(ssid);
 
   WiFi.begin(ssid, password);
+  // Wait for connection
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
@@ -141,7 +36,7 @@ void setup_wifi() {
   Serial.println(WiFi.localIP());
 }
 
-// Called whenever a message arrives on a subscribed topic
+// Called when a subscribed message arrives
 void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print("Message arrived on [");
   Serial.print(topic);
@@ -155,12 +50,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
 }
 
 void reconnect() {
+  // Loop until we're reconnected
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
     String clientId = "NodeMCU-" + String(ESP.getChipId());
 
     bool connected;
-    if (strlen(mqtt_user) > 0) {
+    if (mqtt_user && strlen(mqtt_user) > 0) {
       connected = client.connect(clientId.c_str(), mqtt_user, mqtt_pass);
     } else {
       connected = client.connect(clientId.c_str());
@@ -173,7 +69,7 @@ void reconnect() {
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
-      Serial.println(" trying again in 5 seconds");
+      Serial.println(" - retrying in 5s");
       delay(5000);
     }
   }
@@ -203,40 +99,27 @@ void loop() {
     Serial.println("Published: " + msg);
   }
 }
-```
-
-Update `ssid`, `password`, and `mqtt_server` with your own network details before uploading.
-
----
-
-## Part 3 — Raspberry Pi: Python MQTT Client
-
-### 1. Install the Python MQTT library
-
-```bash
-pip3 install paho-mqtt
-```
-
-### 2. Create the chat client script
-
-```bash
-nano pi_chat.py
-```
-
-```python
+#includes: ESP8266WiFi.h handles Wi‑Fi; PubSubClient.h handles MQTT client logic.
+Configuration block: set your Wi‑Fi SSID/password and mqtt_server to the Pi’s IP. If you enable Mosquitto authentication, set mqtt_user and mqtt_pass.
+setup_wifi(): connects the ESP to your Wi‑Fi network and prints the assigned IP to Serial — useful to verify connectivity.
+callback(): called by PubSubClient when a message arrives on any subscribed topic; it prints the topic and payload to Serial, so the Pi sees these messages in its terminal and you see NodeMCU messages on Serial.
+reconnect(): ensures there is an MQTT connection. If authentication is provided it uses username/password; otherwise it connects anonymously. On success it subscribes to the Pi topic and announces “NodeMCU is online”.
+setup(): starts Serial, connects Wi‑Fi, sets the MQTT server and callback.
+loop(): keeps the MQTT client alive (client.loop()) and publishes a simple heartbeat every 10 seconds.
 import paho.mqtt.client as mqtt
 import threading
 
-BROKER = "localhost"
+BROKER = "localhost"   # if broker runs on the same Pi
 PORT = 1883
 TOPIC_PUBLISH = "chat/pi"
 TOPIC_SUBSCRIBE = "chat/nodemcu"
 
 def on_connect(client, userdata, flags, rc):
-    print(f"Connected to broker with result code {rc}")
+    print(f"Connected to broker (rc={rc})")
     client.subscribe(TOPIC_SUBSCRIBE)
 
 def on_message(client, userdata, msg):
+    # Print incoming messages from NodeMCU
     print(f"\n[NodeMCU] {msg.payload.decode()}")
     print("You: ", end="", flush=True)
 
@@ -256,37 +139,35 @@ except KeyboardInterrupt:
     print("\nExiting chat.")
     client.loop_stop()
     client.disconnect()
-```
+    paho.mqtt.client: standard MQTT client for Python.
+BROKER: "localhost" because Mosquitto runs on the Pi. If Mosquitto is on another host use its IP.
+TOPIC_PUBLISH / TOPIC_SUBSCRIBE: the Pi publishes to chat/pi and subscribes to chat/nodemcu to receive NodeMCU messages.
+on_connect(): called when the client connects; subscribes to the NodeMCU topic.
+on_message(): called when a message arrives; prints NodeMCU messages and then reprints the prompt.
+client.loop_start(): runs the MQTT network loop in a background thread so the main thread can block on input() to send messages.
+The main loop reads user input and publishes it. KeyboardInterrupt cleanly stops the loop and disconnects.
+listener 1883: tells Mosquitto to listen on the standard MQTT port on all interfaces (not just localhost).
+allow_anonymous true: allows clients to connect without credentials — convenient for local testing only. For security, set to false and create users with mosquitto_passwd.
+Commands to run on the Raspberry Pi (step-by-step)
 
-Save with `Ctrl + X`, then `Y`, then `Enter`.
+Update and install Mosquitto:
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y mosquitto mosquitto-clients
+Create the config file so Mosquitto listens on the network:
+sudo nano /etc/mosquitto/conf.d/default.conf (paste the config above)
+sudo systemctl restart mosquitto
+sudo systemctl enable mosquitto
+Verify broker is running:
+sudo systemctl status mosquitto
+(Optional) If you enable authentication:
+sudo mosquitto_passwd -c /etc/mosquitto/passwd pi_user
+edit the config and add: password_file /etc/mosquitto/passwd
+restart mosquitto: sudo systemctl restart mosquitto
+Install Python MQTT client:
+pip3 install paho-mqtt
+Quick broker test (on Pi)
 
-### 3. Run the chat client
-
-```bash
-python3 pi_chat.py
-```
-
-Anything you type in this terminal is published to `chat/pi` and shows up on the NodeMCU's serial monitor. Anything the NodeMCU publishes to `chat/nodemcu` appears in this terminal.
-
----
-
-## Testing the Full Chat
-
-1. Power on the NodeMCU with the sketch uploaded — check the Serial Monitor for `"WiFi connected"` and `"connected"` (to MQTT).
-2. Run `python3 pi_chat.py` on the Pi.
-3. Type a message on the Pi — it should appear on the NodeMCU's Serial Monitor.
-4. Wait for the NodeMCU's periodic heartbeat message — it should appear in the Pi's terminal.
-
-## Troubleshooting
-
-| Issue | Likely Cause |
-|---|---|
-| NodeMCU won't connect to WiFi | Wrong SSID/password, or ESP8266 doesn't support 5GHz networks |
-| NodeMCU can't reach the broker | Wrong `mqtt_server` IP, or `allow_anonymous true` / firewall not configured |
-| No messages appear on either side | Topic names don't match, or the broker isn't running (`sudo systemctl status mosquitto`) |
-| `Connection refused` error | Mosquitto is only listening on localhost — check the `listener 1883` line in the config |
-
-## Notes
-
-- `allow_anonymous true` is fine for testing on a private local network but should not be used in production — switch to username/password (or TLS) authentication before deploying.
-- The Pi's IP address can change if it's using DHCP; consider setting a static IP or using mDNS (`raspberrypi.local`) for a more stable setup.
+Terminal A:
+mosquitto_sub -h localhost -t "chat/test"
+Terminal B:
+mosquitto_pub -h localhost -t "chat/test" -m "Hello broker" You should see "Hello broker" in Terminal A.
